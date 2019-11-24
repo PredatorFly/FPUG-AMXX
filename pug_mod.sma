@@ -196,10 +196,17 @@ public plugin_natives()
 	register_native("PugStart", "StartVoting")
 	register_native("register_pug_event", "_register_pug_event")
 	register_native("pug_get_state", "_pug_get_state")
+	register_native("OnRemotePugEnd", "_pug_remote_end")
 }
 public _pug_get_state()
 {
 	return any:pug_state
+}
+public _pug_remote_end(team)
+{
+	pug_state = ENDING
+	set_member_game(m_bCompleteReset, true)
+	ExecuteEvent(PUG_END, team == 2 ? TEAM_CT : TEAM_TERRORIST)
 }
 public plugin_precache()
 {

@@ -34,6 +34,7 @@ enum PUG_EVENTS
 */
 native PugRegisterCommand(name[], fwd[], flags = -1, PUG_STATE:pugstate = NO_ALIVE);
 native PugNextVote();
+native PugRemoteEnd(team);
 native PugRegisterVote(name[], function[]);
 native PugRegisterVoteOption(option[]);
 native PugStart();
