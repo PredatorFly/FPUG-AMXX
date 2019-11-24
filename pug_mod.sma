@@ -3,7 +3,7 @@
 #include <reapi>
 
 #define PLUGIN  "Pug Mod"
-#define VERSION "2.06 rev.E"
+#define VERSION "2.1 rev.C"
 #define AUTHOR  "Sugisaki"
 
 #define SND_COUNTER_BEEP "UI/buttonrollover.wav"
@@ -25,6 +25,8 @@ new Trie:g_commands
 new Trie:g_votes
 new HookChain:PreThink
 new HookChain:g_MakeBomber
+new HookChain:g_BombDefuseEnd
+new HookChain:g_BombExplode
 new bool:is_intermission = false
 new bool:overtime = false
 new WinStatus:g_tPugWin
@@ -53,6 +55,7 @@ new g_iHalfRoundNum
 new g_pVoteCount
 new g_pVoteMap
 new g_pMaxSpeed
+new g_pBombFrag
 new g_pIntermissionCountdown
 new g_pMaxRounds
 new g_pOverTime
@@ -65,6 +68,7 @@ new g_iCurrentVote = 0
 new g_pMinPlayers
 new g_pForceEndTime
 new g_iTimeToEnd
+new Float:g_fNextPlayerThink[33]
 new TeamName:g_iForceEndTeam = TEAM_UNASSIGNED
 enum _:PUG_EVENTS
 {
@@ -72,7 +76,9 @@ enum _:PUG_EVENTS
 	ALL_PLAYER_IS_READY, /*(void)*/
 	ROUND_START, /*(void)*/
 	ROUND_END, /*(TeamName:win_team)*/
-	PUG_END /*(TeamName:win_team, bool:draw, bool:overtime)*/
+	PUG_END, /*(TeamName:win_team, bool:draw, bool:overtime)*/
+	INTERMISSION_START, /* (void) */
+	INTERMISSION_END /* (void) */
 }
 new Array:PugHooks[PUG_EVENTS];
 new g_iDamage[33][33]
@@ -159,6 +165,8 @@ public plugin_init()
 	RegisterHookChain(RG_RoundEnd, "OnRoundEndPre", 0)
 	RegisterHookChain(RG_HandleMenu_ChooseTeam, "OnChooseTeam")
 	RegisterHookChain(RG_CBasePlayer_AddAccount, "OnCallMoneyEvent2")
+	g_BombDefuseEnd = RegisterHookChain(RG_CGrenade_DefuseBombEnd, "OnDefuseBomb", 1)
+	g_BombExplode = RegisterHookChain(RG_CGrenade_ExplodeBomb, "OnBombExplode", 1)
 	register_forward(FM_ClientDisconnect, "OnClientDisconnected")
 	register_event("Damage", "OnDamageEvent", "b", "2!0", "3=0", "4!0")
 	register_event("DeathMsg", "OnPlayerDeath", "a")
@@ -187,6 +195,11 @@ public plugin_natives()
 	register_native("PugNextVote", "NextVote")
 	register_native("PugStart", "StartVoting")
 	register_native("register_pug_event", "_register_pug_event")
+	register_native("pug_get_state", "_pug_get_state")
+}
+public _pug_get_state()
+{
+	return any:pug_state
 }
 public plugin_precache()
 {
@@ -209,14 +222,14 @@ public _register_pug_event(pl, pr)
 	}
 	new func=-1;
 	switch(event)
-	{
-		case PUG_START,ALL_PLAYER_IS_READY,ROUND_START:
-		{
-			func = CreateOneForward(pl, str);
-		}
+	{	
 		case ROUND_END,PUG_END:
 		{
 			func = CreateOneForward(pl, str, FP_CELL)
+		}
+		default : 
+		{
+			func = CreateOneForward(pl, str);
 		}
 	}
 	if(func == -1)
@@ -332,6 +345,7 @@ RegisterCvars()
 	g_pOverTimeMoney				=		register_cvar("pug_overtime_money", "10000")
 	g_pMinPlayers					=		register_cvar("pug_minplayers", "3")
 	g_pForceEndTime					=		register_cvar("pug_force_end_time", "3")
+	g_pBombFrag						=		register_cvar("pug_bombfrags", "1");
 
 	Sync1 = CreateHudSyncObj()
 	Sync2 = CreateHudSyncObj()
@@ -966,13 +980,17 @@ public OnPlayerThink(id)
 {
 	if(pug_state == COMMENCING || is_intermission)
 	{
-		client_cmd(id, "+strafe%s", is_intermission ? ";+showscores" : "")
+		if(g_fNextPlayerThink[id] <= get_gametime())
+		{
+			client_cmd(id, "+strafe%s", is_intermission ? ";+showscores" : "")
+			g_fNextPlayerThink[id] = get_gametime() + 0.2;
+		}
 		static item
 		item = get_member(id, m_pActiveItem);
 		if(!is_nullent(item))
 		{
-			set_member(item, m_Weapon_flNextPrimaryAttack, 0.1)
-			set_member(item, m_Weapon_flNextSecondaryAttack, 0.1)
+			set_member(item, m_Weapon_flNextPrimaryAttack, 1.0)
+			set_member(item, m_Weapon_flNextSecondaryAttack, 1.0)
 		}
 	}
 	else
@@ -1017,6 +1035,16 @@ public OnStartRound()
 				set_cvar_string(cvar_pug[i][NAME], cvar_pug[i][VALUE])
 			}
 			ExecuteEvent(PUG_START)
+			if(get_pcvar_num(g_pBombFrag) == 0)
+			{
+				DisableHookChain(g_BombDefuseEnd)
+				DisableHookChain(g_BombExplode)
+			}
+			else
+			{
+				EnableHookChain(g_BombDefuseEnd)
+				EnableHookChain(g_BombExplode)
+			}
 		}
 		if(is_intermission)
 		{			
@@ -1027,8 +1055,6 @@ public OnStartRound()
 		set_pcvar_num(g_pMaxSpeed, 320)
 		DisableHookChain(g_MakeBomber)
 	}
-	client_cmd(0, "-strafe;-showscores")
-
 }
 public OnStartRound_NextFrame()
 {
@@ -1058,6 +1084,21 @@ public OnStartRound_NextFrame()
 		}
 	}
 }
+public OnDefuseBomb(ent, id, bool:bDefused)
+{
+	if(bDefused)
+	{
+		set_pev(id, pev_frags, pev(id, pev_frags) - 3);
+	}
+}
+public OnBombExplode(ent)
+{
+	new id = get_entvar(ent, var_owner);
+	if(is_user_connected(id))
+	{
+		set_pev(id, pev_frags, pev(id, pev_frags) - 3 )
+	}
+}
 public OnMakeBomber()
 {
 	if(pug_state == ALIVE)
@@ -1065,7 +1106,7 @@ public OnMakeBomber()
 		DisableHookChain(g_MakeBomber)
 		return HC_CONTINUE
 	}
-	SetHookChainReturn(ATYPE_INTEGER, 0)
+	SetHookChainReturn(ATYPE_BOOL, false)
 	return HC_SUPERCEDE
 }
 stock get_rounds()
@@ -1110,6 +1151,7 @@ public OnStartRoundPost()
 	if(is_intermission)
 	{
 		is_intermission = false
+		ExecuteEvent(INTERMISSION_END)
 		for(new i = 1 ; i<=g_iMaxPlayers ; i++)
 		{
 			if(!is_user_connected(i))
@@ -1136,6 +1178,7 @@ public OnStartRoundPost()
 	{
 		CheckPlayers(TEAM_TERRORIST)
 	}
+	client_cmd(0, "-strafe;-showscores")
 	ExecuteEvent(ROUND_START)
 }
 public update_scoreboard()
@@ -1169,6 +1212,10 @@ public StartIntermission()
 		g_iCountDown = get_pcvar_num(g_pIntermissionCountdown)
 	}
 	set_pcvar_num(g_pMaxSpeed, 0)
+	if(pug_state != ENDING)
+	{
+		ExecuteEvent(INTERMISSION_START);
+	}
 	set_task(1.0, "IntermissionCountDown", TASK_INTERMISSION, _, _, "a", g_iCountDown)
 }
 public IntermissionCountDown(task)
@@ -1533,16 +1580,15 @@ stock ExecuteEvent(event, any:...)
 	static x;
 	for(x=0 ; x<ArraySize(PugHooks[event]);x++)
 	{
-		
 		switch(event)
 		{
-			case PUG_START,ALL_PLAYER_IS_READY,ROUND_START:
-			{
-				ExecuteForward(ArrayGetCell(PugHooks[event], x), _)
-			}
 			case ROUND_END,PUG_END:
 			{
 				ExecuteForward(ArrayGetCell(PugHooks[event], x), _, getarg(1))
+			}
+			default:
+			{
+				ExecuteForward(ArrayGetCell(PugHooks[event], x), _)
 			}
 		}
 	}

@@ -16,7 +16,9 @@ enum PUG_EVENTS
 	ALL_PLAYER_IS_READY, /*(void)*/
 	ROUND_START, /*(void)*/
 	ROUND_END, /*(TeamName:win_team)*/
-	PUG_END /*(TeamName:win_team)*/
+	PUG_END, /*(TeamName:win_team)*/
+	INTERMISSION_START, /* (void) */
+	INTERMISSION_END /* void */
 }
 /*
 * Registrar un comando
@@ -36,3 +38,4 @@ native PugRegisterVote(name[], function[]);
 native PugRegisterVoteOption(option[]);
 native PugStart();
 native register_pug_event(PUG_EVENTS:event, const function[]);
+native PUG_STATE:pug_get_state()
